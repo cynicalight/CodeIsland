@@ -1,0 +1,99 @@
+import XCTest
+import Darwin
+@testable import CodeIsland
+import CodeIslandCore
+
+@MainActor
+final class ClaudeTerminalMetadataTests: XCTestCase {
+    private let env = ["TERM_PROGRAM": "tmux", "__CFBundleIdentifier": "com.mitchellh.ghostty",
+                       "TMUX": "/tmp/tmux-test/default,123,0", "TMUX_PANE": "%13"]
+
+    private func fixture() throws -> (AppState, ProcessIdentity) {
+        let state = AppState()
+        let process = try XCTUnwrap(AppState.liveProcessIdentity(for: getpid()))
+        var session = SessionSnapshot()
+        session.source = "claude"
+        session.cliPid = process.pid
+        session.cliStartTime = process.startTime
+        state.sessions["claude-test"] = session
+        return (state, process)
+    }
+
+    func testDiscoveredClaudeRecoversGhosttyAndTmuxMetadata() throws {
+        let (state, process) = try fixture()
+        XCTAssertTrue(state.backfillClaudeTerminalMetadata(sessionId: "claude-test", process: process,
+            readEnvironment: { pid in XCTAssertEqual(pid, process.pid); return self.env }))
+        let session = try XCTUnwrap(state.sessions["claude-test"])
+        XCTAssertEqual(session.termApp, "tmux")
+        XCTAssertEqual(session.termBundleId, "com.mitchellh.ghostty")
+        XCTAssertEqual(session.tmuxPane, "%13")
+        XCTAssertEqual(session.tmuxEnv, env["TMUX"])
+    }
+
+    func testExistingHookMetadataIsPreserved() throws {
+        let (state, process) = try fixture()
+        state.sessions["claude-test"]?.tmuxPane = "%19"
+        state.sessions["claude-test"]?.tmuxEnv = "/different/socket,1,0"
+        _ = state.backfillClaudeTerminalMetadata(sessionId: "claude-test", process: process,
+            readEnvironment: { _ in self.env })
+        XCTAssertEqual(state.sessions["claude-test"]?.tmuxPane, "%19")
+        XCTAssertEqual(state.sessions["claude-test"]?.tmuxEnv, "/different/socket,1,0")
+    }
+
+    func testDifferentOrReusedProcessCannotWriteMetadata() throws {
+        let (state, process) = try fixture()
+        state.sessions["claude-test"]?.cliPid = process.pid + 1
+        XCTAssertFalse(state.backfillClaudeTerminalMetadata(sessionId: "claude-test", process: process,
+            readEnvironment: { _ in XCTFail("Must not read unrelated process"); return self.env }))
+        state.sessions["claude-test"]?.cliPid = process.pid
+        let stale = ProcessIdentity(pid: process.pid, startTime: Date(timeIntervalSince1970: 1))
+        state.sessions["claude-test"]?.cliStartTime = stale.startTime
+        XCTAssertFalse(state.backfillClaudeTerminalMetadata(sessionId: "claude-test", process: stale,
+            readEnvironment: { _ in XCTFail("Must not read reused process"); return self.env }))
+    }
+
+    func testRemoteDesktopAndCodexSessionsAreNotReclassified() throws {
+        for mode in ["remote", "desktop", "codex"] {
+            let (state, process) = try fixture()
+            if mode == "remote" { state.sessions["claude-test"]?.remoteHostId = "server" }
+            if mode == "desktop" { state.sessions["claude-test"]?.termBundleId = "com.anthropic.claudefordesktop" }
+            if mode == "codex" { state.sessions["claude-test"]?.source = "codex" }
+            XCTAssertFalse(state.backfillClaudeTerminalMetadata(sessionId: "claude-test", process: process,
+                readEnvironment: { _ in XCTFail("Unexpected environment probe: \(mode)"); return self.env }))
+        }
+    }
+    func testUnreadableEnvironmentDoesNotInventTerminalMetadata() throws {
+        let (state, process) = try fixture()
+        XCTAssertFalse(state.backfillClaudeTerminalMetadata(sessionId: "claude-test", process: process,
+            readEnvironment: { _ in nil }))
+        XCTAssertNil(state.sessions["claude-test"]?.tmuxPane)
+        XCTAssertNil(state.sessions["claude-test"]?.termBundleId)
+    }
+
+    func testLiveClaudeProcessesWhenRequested() throws {
+        guard let path = ProcessInfo.processInfo.environment["CODEISLAND_CLAUDE_FIXTURE"] else {
+            throw XCTSkip("Opt-in read-only local Claude process check")
+        }
+        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path))) as? [[String: Any]])
+        let state = AppState()
+        for row in rows {
+            let id = try XCTUnwrap(row["sessionId"] as? String)
+            let pid = pid_t(try XCTUnwrap(row["cliPid"] as? Int))
+            let started = try XCTUnwrap((row["cliStartTime"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) })
+            let process = ProcessIdentity(pid: pid, startTime: started)
+            var session = SessionSnapshot()
+            session.source = "claude"
+            session.cliPid = pid
+            session.cliStartTime = started
+            state.sessions[id] = session
+            XCTAssertTrue(state.backfillClaudeTerminalMetadata(sessionId: id, process: process))
+            let recovered = try XCTUnwrap(state.sessions[id])
+            XCTAssertEqual(recovered.termBundleId, "com.mitchellh.ghostty")
+            XCTAssertEqual(recovered.tmuxPane, row["expectedPane"] as? String)
+            let verified = CodexTmuxRouting.probe(session: recovered, tmuxPath: "/opt/homebrew/bin/tmux")
+            XCTAssertEqual(verified?.tmuxPane, recovered.tmuxPane)
+            print("Claude process \(pid) -> \(recovered.termBundleId ?? "") / \(recovered.tmuxPane ?? "")")
+        }
+    }
+
+}

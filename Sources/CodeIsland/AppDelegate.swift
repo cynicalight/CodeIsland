@@ -24,7 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Pre-set app icon so Dock/menu bar use the packaged bundle icon.
         NSApp.applicationIconImage = SettingsWindowController.bundleAppIcon()
         SettingsWindowController.shared.appState = appState
-        StatusItemController.shared.startObserving()
+        // The persistent menu-bar entry is owned by CodeIslandApp.
         // Start HookServer BEFORE installing hooks into CLI configs.
         // If we write settings.json first, Claude Code picks up the new hooks
         // immediately but the socket isn't listening yet — PermissionRequest
@@ -187,6 +187,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Explicitly reopening the menu-bar app should expose its real settings,
+        // not ask SwiftUI to synthesize a placeholder Settings scene.
+        SettingsWindowController.shared.show()
+        return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {

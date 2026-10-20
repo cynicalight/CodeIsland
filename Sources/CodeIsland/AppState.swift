@@ -1179,6 +1179,9 @@ final class AppState {
         // Primary: use PID from bridge (works for any CLI)
         if let sessionProcess = resolvedSessionProcessIdentity(for: sessionId),
            Self.isLiveProcess(sessionProcess) {
+            if backfillClaudeTerminalMetadata(sessionId: sessionId, process: sessionProcess) {
+                scheduleSave()
+            }
             if currentMonitor == sessionProcess { return }
             if currentMonitor != nil {
                 stopMonitor(sessionId)
@@ -1189,6 +1192,9 @@ final class AppState {
 
         if let currentMonitor, Self.isLiveProcess(currentMonitor) {
             setSessionProcessIdentity(currentMonitor, for: sessionId)
+            if backfillClaudeTerminalMetadata(sessionId: sessionId, process: currentMonitor) {
+                scheduleSave()
+            }
             return
         }
 
@@ -1211,6 +1217,9 @@ final class AppState {
                     self.setSessionProcessIdentity(discoveredProcess, for: sessionId)
                 }
 
+                if self.backfillClaudeTerminalMetadata(sessionId: sessionId, process: preferredProcess) {
+                    self.scheduleSave()
+                }
                 if let monitorProcess = self.processMonitors[sessionId]?.process,
                    monitorProcess == preferredProcess, Self.isLiveProcess(monitorProcess) {
                     return

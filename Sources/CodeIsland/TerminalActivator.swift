@@ -196,6 +196,12 @@ struct TerminalActivator {
             return
         }
 
+        activateTerminal(session: session, sessionId: sessionId)
+    }
+
+    private static func activateTerminal(
+        session: SessionSnapshot, sessionId: String?, tmuxAlreadySelected: Bool = false
+    ) {
         // Resolve terminal: bundle ID (most accurate) → TERM_PROGRAM → scan running apps
         let termApp: String
         if let bundleId = session.termBundleId,
@@ -278,7 +284,12 @@ struct TerminalActivator {
         }
 
         // --- tmux: switch pane first, then fall through to terminal-specific activation ---
-        if let pane = session.tmuxPane, !pane.isEmpty {
+        if !tmuxAlreadySelected, session.source == "codex",
+           session.tmuxPane != nil || session.tmuxEnv != nil {
+            activateVerifiedCodexTmux(session: session, sessionId: sessionId)
+            return
+        }
+        if !tmuxAlreadySelected, let pane = session.tmuxPane, !pane.isEmpty {
             activateTmux(pane: pane, tmuxEnv: session.tmuxEnv)
         }
 
@@ -1033,6 +1044,57 @@ struct TerminalActivator {
               ]) else { return }
         DispatchQueue.global(qos: .userInitiated).async {
             _ = runProcess(bin, args: ["terminal", "switch", "--terminal", handle, "--json"])
+        }
+    }
+
+    /// Re-resolve the target before touching tmux. Hooks from a shared Codex
+    /// daemon can all carry the pane where that daemon originally started.
+    private static func activateVerifiedCodexTmux(session: SessionSnapshot, sessionId: String?) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let bin = findBinary("tmux"),
+                  var resolved = CodexTmuxRouting.probe(session: session, tmuxPath: bin),
+                  let pane = resolved.tmuxPane else {
+                showTmuxLocationUnavailable()
+                return
+            }
+            let env = tmuxProcessEnv(resolved.tmuxEnv)
+            guard let data = ProcessRunner.run(path: bin, args: ["list-clients", "-F", "#{client_tty}"],
+                                               env: env, timeout: 2),
+                  let output = String(data: data, encoding: .utf8) else {
+                showTmuxLocationUnavailable()
+                return
+            }
+            let clients = output.split(separator: "\n").map(String.init)
+            let client = resolved.tmuxClientTty.flatMap { clients.contains($0) ? $0 : nil }
+                ?? (clients.count == 1 ? clients[0] : nil)
+            guard let client else {
+                showTmuxLocationUnavailable()
+                return
+            }
+            // Complete the switch before matching the outer terminal's window.
+            for args in [["switch-client", "-c", client, "-t", pane],
+                         ["select-window", "-t", pane], ["select-pane", "-t", pane]] {
+                guard ProcessRunner.run(path: bin, args: args, env: env, timeout: 2) != nil else {
+                    showTmuxLocationUnavailable()
+                    return
+                }
+            }
+            resolved.tmuxClientTty = client
+            let target = resolved
+            DispatchQueue.main.async {
+                activateTerminal(session: target, sessionId: sessionId, tmuxAlreadySelected: true)
+            }
+        }
+    }
+
+    private static func showTmuxLocationUnavailable() {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "Unable to locate this session in tmux"
+            alert.informativeText = "The terminal location could not be verified or selected. Keep the session open with a distinct title and try again."
+            alert.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
         }
     }
 
