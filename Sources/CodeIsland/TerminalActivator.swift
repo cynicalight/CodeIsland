@@ -1080,12 +1080,15 @@ struct TerminalActivator {
         }
     }
 
+    /// Only for `CodexTmuxRouting.Resolution.ambiguous`: the hook's pane is
+    /// known to be another session's and no single pane shows this one.
     private static func showTmuxLocationUnavailable() {
+        guard !RuntimeEnvironment.isRunningTests else { return }
         DispatchQueue.main.async {
             let alert = NSAlert()
-            alert.messageText = "Unable to locate this session in tmux"
-            alert.informativeText = "The terminal location could not be verified or selected. Keep the session open with a distinct title and try again."
-            alert.addButton(withTitle: "OK")
+            alert.messageText = L10n.shared["tmux_pane_unknown_title"]
+            alert.informativeText = L10n.shared["tmux_pane_unknown_body"]
+            alert.addButton(withTitle: L10n.shared["ok"])
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
         }
