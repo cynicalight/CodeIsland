@@ -52,6 +52,7 @@ struct TerminalActivator {
         // Codex has both CLI and desktop sessions. Only an explicit desktop
         // bundle ID should route to Codex.app; a source-only fallback steals
         // Ghostty/tmux CLI jumps whenever the desktop app is also running.
+        // Callers with no session use desktopAppBundleId(forSource:).
         "cursor": "com.todesktop.230313mzl4w4u92",
         "trae": "com.trae.app",
         // Trae CN is its own install with its own bundle id (Homebrew trae-cn
@@ -69,6 +70,14 @@ struct TerminalActivator {
         // of raising — or launching — the IDE.
         "aiwork": "com.alipay.dtcoder.ide",
     ]
+
+    /// The source's desktop app for a caller with no session to route, such as
+    /// Buddy's focus button when no card of that agent exists. Codex is kept
+    /// out of the map above so a running Codex.app can't steal a CLI session's
+    /// jump; with no session there is no jump to steal.
+    static func desktopAppBundleId(forSource source: String) -> String? {
+        sourceToNativeAppBundleId[source] ?? (source == "codex" ? AppState.codexAppBundleId : nil)
+    }
 
     /// Bundle IDs of apps that have both APP and CLI modes.
     /// When termBundleId matches, bring that app to front;

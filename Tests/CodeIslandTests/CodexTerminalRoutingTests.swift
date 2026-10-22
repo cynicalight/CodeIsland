@@ -35,4 +35,12 @@ final class CodexTerminalRoutingTests: XCTestCase {
         XCTAssertTrue(session.isNativeAppMode)
         XCTAssertFalse(session.isIDETerminal)
     }
+
+    /// Buddy's focus button with no Codex card still raises Codex.app; only a
+    /// session's own jump stopped falling back to it.
+    func testSessionlessCallersStillFindTheCodexDesktopApp() {
+        XCTAssertEqual(TerminalActivator.desktopAppBundleId(forSource: "codex"), "com.openai.codex")
+        XCTAssertEqual(TerminalActivator.desktopAppBundleId(forSource: "trae"), "com.trae.app")
+        XCTAssertNil(TerminalActivator.desktopAppBundleId(forSource: "claude"))
+    }
 }
