@@ -165,8 +165,45 @@ final class CodexTmuxRoutingTests: XCTestCase {
         XCTAssertEqual(located?.session, String(fields[2]))
         input.cliPid = getpid() // The test runner is not a child of that pane.
         XCTAssertEqual(CodexTmuxRouting.probe(session: input, tmuxPath: bin), .ambiguous)
+        // The entry point the jump and the visibility check share: a Codex
+        // session is second-guessed, the same session from another source is not.
+        XCTAssertEqual(CodexTmuxRouting.resolution(for: input, tmuxPath: bin), .ambiguous)
+        var claude = input
+        claude.source = "claude"
+        XCTAssertEqual(CodexTmuxRouting.resolution(for: claude, tmuxPath: bin), .unverified)
         // No server on the socket: nothing to verify against.
         input.tmuxEnv = "\(socket)-missing,1,0"
         XCTAssertEqual(CodexTmuxRouting.probe(session: input, tmuxPath: bin), .unverified)
+    }
+
+    func testResolutionKeepsTheHookPaneWithoutTmuxOrAPane() {
+        XCTAssertEqual(CodexTmuxRouting.resolution(for: session(pid: 700), tmuxPath: nil), .unverified)
+        var paneless = session(pid: 700)
+        paneless.tmuxPane = nil
+        XCTAssertEqual(CodexTmuxRouting.resolution(for: paneless, tmuxPath: "/usr/bin/false"), .unverified)
+    }
+
+    /// The jump check reads the same resolution as the jump: a session whose
+    /// jump could only raise its terminal never counts as landed.
+    func testJumpCheckDoesNotClaimAnUnlocatableSession() {
+        let input = session(pid: 700)
+        installVisibilityProbe(.init(isTerminalFrontmost: { _ in true },
+                                     isSessionTabVisible: { _ in false },
+                                     isSessionLocatable: { _ in false }))
+        XCTAssertFalse(TerminalVisibilityDetector.didJumpLand(input))
+        installVisibilityProbe(.init(isTerminalFrontmost: { _ in true },
+                                     isSessionTabVisible: { _ in false },
+                                     isSessionLocatable: { _ in true }))
+        XCTAssertTrue(TerminalVisibilityDetector.didJumpLand(input))
+        // The session's own tab showing is a landed jump, whatever else holds.
+        installVisibilityProbe(.init(isTerminalFrontmost: { _ in false },
+                                     isSessionTabVisible: { _ in true },
+                                     isSessionLocatable: { _ in false }))
+        XCTAssertTrue(TerminalVisibilityDetector.didJumpLand(input))
+        // Probes that don't answer it keep the app-level check.
+        installVisibilityProbe(.terminalInFront { _ in true })
+        XCTAssertTrue(TerminalVisibilityDetector.didJumpLand(input))
+        installVisibilityProbe(.unknown)
+        XCTAssertFalse(TerminalVisibilityDetector.didJumpLand(input))
     }
 }
