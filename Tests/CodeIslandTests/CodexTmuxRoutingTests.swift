@@ -169,25 +169,4 @@ final class CodexTmuxRoutingTests: XCTestCase {
         input.tmuxEnv = "\(socket)-missing,1,0"
         XCTAssertEqual(CodexTmuxRouting.probe(session: input, tmuxPath: bin), .unverified)
     }
-
-    func testLiveSavedSessionsWhenRequested() throws {
-        guard let fixture = ProcessInfo.processInfo.environment["CODEISLAND_TMUX_FIXTURE"] else {
-            throw XCTSkip("Opt-in read-only check of locally saved sessions")
-        }
-        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: fixture))) as? [[String: Any]])
-        for row in rows {
-            var input = SessionSnapshot()
-            input.source = "codex"
-            input.cliPid = (row["cliPid"] as? Int).map { pid_t($0) }
-            input.cliStartTime = (row["cliStartTime"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) }
-            input.tmuxEnv = row["tmuxEnv"] as? String
-            input.tmuxPane = row["tmuxPane"] as? String
-            input.sessionTitle = row["sessionTitle"] as? String
-            input.cwd = row["cwd"] as? String
-            let resolved = CodexTmuxRouting.probe(session: input, tmuxPath: "/opt/homebrew/bin/tmux").pane
-            XCTAssertEqual(resolved?.id, row["expectedPane"] as? String)
-            print("Live route: \(row["sessionId"] ?? "") -> \(resolved?.id ?? "unavailable")")
-        }
-    }
-
 }

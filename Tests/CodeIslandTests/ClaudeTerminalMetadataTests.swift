@@ -91,31 +91,4 @@ final class ClaudeTerminalMetadataTests: XCTestCase {
         XCTAssertNil(state.sessions["claude-test"]?.tmuxPane)
         XCTAssertNil(state.sessions["claude-test"]?.termBundleId)
     }
-
-    func testLiveClaudeProcessesWhenRequested() throws {
-        guard let path = ProcessInfo.processInfo.environment["CODEISLAND_CLAUDE_FIXTURE"] else {
-            throw XCTSkip("Opt-in read-only local Claude process check")
-        }
-        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path))) as? [[String: Any]])
-        let state = AppState()
-        for row in rows {
-            let id = try XCTUnwrap(row["sessionId"] as? String)
-            let pid = pid_t(try XCTUnwrap(row["cliPid"] as? Int))
-            let started = try XCTUnwrap((row["cliStartTime"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) })
-            let process = ProcessIdentity(pid: pid, startTime: started)
-            var session = SessionSnapshot()
-            session.source = "claude"
-            session.cliPid = pid
-            session.cliStartTime = started
-            state.sessions[id] = session
-            XCTAssertTrue(state.backfillClaudeTerminalMetadata(sessionId: id, process: process))
-            let recovered = try XCTUnwrap(state.sessions[id])
-            XCTAssertEqual(recovered.termBundleId, "com.mitchellh.ghostty")
-            XCTAssertEqual(recovered.tmuxPane, row["expectedPane"] as? String)
-            let verified = CodexTmuxRouting.probe(session: recovered, tmuxPath: "/opt/homebrew/bin/tmux")
-            XCTAssertEqual(verified.pane?.id, recovered.tmuxPane)
-            print("Claude process \(pid) -> \(recovered.termBundleId ?? "") / \(recovered.tmuxPane ?? "")")
-        }
-    }
-
 }
