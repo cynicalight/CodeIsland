@@ -36,6 +36,17 @@ final class CodexTerminalRoutingTests: XCTestCase {
         XCTAssertFalse(session.isIDETerminal)
     }
 
+    /// An ambiguous Codex tmux jump raises the session's terminal app only.
+    func testAmbiguousJumpRaisesTheSessionsTerminalApp() {
+        XCTAssertEqual(TerminalActivator.appLevelTerminalBundleId(
+            termApp: "Ghostty", termBundleId: "com.googlecode.iterm2"), "com.googlecode.iterm2")
+        XCTAssertEqual(TerminalActivator.appLevelTerminalBundleId(
+            termApp: "ghostty", termBundleId: nil), "com.mitchellh.ghostty")
+        XCTAssertEqual(TerminalActivator.appLevelTerminalBundleId(
+            termApp: "iTerm2", termBundleId: ""), "com.googlecode.iterm2")
+        XCTAssertNil(TerminalActivator.appLevelTerminalBundleId(termApp: "Hyper", termBundleId: nil))
+    }
+
     /// Buddy's focus button with no Codex card still raises Codex.app; only a
     /// session's own jump stopped falling back to it.
     func testSessionlessCallersStillFindTheCodexDesktopApp() {

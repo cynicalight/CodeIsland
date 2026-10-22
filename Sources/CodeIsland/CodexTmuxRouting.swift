@@ -45,6 +45,18 @@ enum CodexTmuxRouting {
         "#{pane_id}\t#{pane_pid}\t#{session_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}"
     static let clientFormat = "#{client_tty}\t#{session_id}"
 
+    /// The one place a session's tmux target is decided: for the jump
+    /// (TerminalActivator) and for checking whether it landed or is in view
+    /// (TerminalVisibilityDetector), so the two can't disagree. Only a Codex
+    /// session in a tmux pane is second-guessed; any other session answers
+    /// `.unverified`, keeping its hook's pane, without running anything.
+    /// Blocking (runs tmux): call off the main thread.
+    static func resolution(for session: SessionSnapshot, tmuxPath: String?) -> Resolution {
+        guard session.source == "codex", let pane = session.tmuxPane, !pane.isEmpty,
+              let tmuxPath else { return .unverified }
+        return probe(session: session, tmuxPath: tmuxPath)
+    }
+
     /// Read-only probe, also used by the integration tests. Never switches a pane.
     static func probe(session: SessionSnapshot, tmuxPath: String) -> Resolution {
         let env = session.tmuxEnv.map { ["TMUX": $0] }

@@ -295,7 +295,7 @@ struct TerminalActivator {
         // --- tmux: switch pane first, then fall through to terminal-specific activation ---
         if !tmuxAlreadySelected, session.source == "codex",
            let pane = session.tmuxPane, !pane.isEmpty {
-            activateCodexTmux(session: session, sessionId: sessionId)
+            activateCodexTmux(session: session, sessionId: sessionId, termApp: termApp)
             return
         }
         if !tmuxAlreadySelected, let pane = session.tmuxPane, !pane.isEmpty {
@@ -1058,15 +1058,16 @@ struct TerminalActivator {
 
     /// Re-resolve the target before touching tmux. Hooks from a shared Codex
     /// daemon can all carry the pane where that daemon originally started.
-    /// Only a pane known to be wrong is refused: when nothing can be checked
-    /// (no tmux binary, no server answer, the process is gone) the hook's pane
-    /// is used exactly as for every other source.
-    private static func activateCodexTmux(session: SessionSnapshot, sessionId: String?) {
+    /// The target is `CodexTmuxRouting.resolution(for:tmuxPath:)`, the same
+    /// answer TerminalVisibilityDetector checks the jump against. When nothing
+    /// can be checked (no tmux binary, no server answer, the process is gone)
+    /// the hook's pane is used exactly as for every other source.
+    private static func activateCodexTmux(session: SessionSnapshot, sessionId: String?, termApp: String) {
         DispatchQueue.global(qos: .userInitiated).async {
             var target = session
             if let bin = findBinary("tmux") {
                 let env = tmuxProcessEnv(session.tmuxEnv)
-                switch CodexTmuxRouting.probe(session: session, tmuxPath: bin) {
+                switch CodexTmuxRouting.resolution(for: session, tmuxPath: bin) {
                 case .located(let pane):
                     let clients = runProcess(bin, args: ["list-clients", "-F", CodexTmuxRouting.clientFormat], env: env)
                         .flatMap { String(data: $0, encoding: .utf8) }
@@ -1077,7 +1078,12 @@ struct TerminalActivator {
                     target.tmuxPane = pane.id
                     if let client { target.tmuxClientTty = client }
                 case .ambiguous:
-                    showTmuxLocationUnavailable()
+                    // The hook's pane is another session's and no single pane shows
+                    // this one: bring the terminal forward and leave tmux as it is.
+                    // The jump check reports this as not landed (see the detector).
+                    DispatchQueue.main.async {
+                        raiseTerminalApp(termApp, termBundleId: session.termBundleId)
+                    }
                     return
                 case .unverified:
                     if let pane = session.tmuxPane { selectTmuxPane(bin, pane: pane, env: env) }
@@ -1089,18 +1095,21 @@ struct TerminalActivator {
         }
     }
 
-    /// Only for `CodexTmuxRouting.Resolution.ambiguous`: the hook's pane is
-    /// known to be another session's and no single pane shows this one.
-    private static func showTmuxLocationUnavailable() {
-        guard !RuntimeEnvironment.isRunningTests else { return }
-        DispatchQueue.main.async {
-            let alert = NSAlert()
-            alert.messageText = L10n.shared["tmux_pane_unknown_title"]
-            alert.informativeText = L10n.shared["tmux_pane_unknown_body"]
-            alert.addButton(withTitle: L10n.shared["ok"])
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
+    /// App level only: no tab, window or tmux pane is picked, and CodeIsland
+    /// itself never comes forward.
+    private static func raiseTerminalApp(_ termApp: String, termBundleId: String?) {
+        if let bundleId = appLevelTerminalBundleId(termApp: termApp, termBundleId: termBundleId) {
+            raiseAppWithoutQuickTerminal(bundleId: bundleId)
+        } else {
+            bringToFront(termApp)
         }
+    }
+
+    /// The app `raiseTerminalApp` brings forward: the hook's bundle ID, else
+    /// the known terminal `termApp` names; nil leaves it to `bringToFront`.
+    static func appLevelTerminalBundleId(termApp: String, termBundleId: String?) -> String? {
+        if let termBundleId, !termBundleId.isEmpty { return termBundleId }
+        return knownTerminals.first { $0.name.caseInsensitiveCompare(termApp) == .orderedSame }?.bundleId
     }
 
     // MARK: - tmux (CLI: tmux switch-client + select-window/select-pane)
