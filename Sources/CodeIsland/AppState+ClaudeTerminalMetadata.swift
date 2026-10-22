@@ -16,10 +16,14 @@ extension AppState {
               !session.isRemote, !session.isNativeAppMode, session.hostHarness == nil,
               session.claudeDesktopSessionId == nil,
               session.cliPid == process.pid, session.cliStartTime == process.startTime,
-              Self.isLiveProcess(process),
               session.termApp == nil || session.termBundleId == nil
                 || session.tmuxPane == nil || session.tmuxEnv == nil,
-              let env = readEnvironment(process.pid),
+              // Fixed at exec: a second read can't find what the first didn't.
+              claudeTerminalProbes[sessionId] != process,
+              Self.isLiveProcess(process) else { return false }
+        let environment = readEnvironment(process.pid)
+        claudeTerminalProbes[sessionId] = process
+        guard let env = environment,
               let tmux = env["TMUX"], !tmux.isEmpty,
               let pane = env["TMUX_PANE"], !pane.isEmpty,
               Self.isLiveProcess(process) else { return false }

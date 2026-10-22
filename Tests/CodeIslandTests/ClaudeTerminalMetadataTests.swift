@@ -62,6 +62,28 @@ final class ClaudeTerminalMetadataTests: XCTestCase {
                 readEnvironment: { _ in XCTFail("Unexpected environment probe: \(mode)"); return self.env }))
         }
     }
+    /// tryMonitorSession runs on every hook event and discovery scan; a session
+    /// outside tmux (most of them) must not re-read its process every time.
+    func testEnvironmentIsReadOncePerProcess() throws {
+        let (state, process) = try fixture()
+        var reads = 0
+        let withoutTmux = ["TERM_PROGRAM": "ghostty", "__CFBundleIdentifier": "com.mitchellh.ghostty"]
+        for _ in 0..<5 {
+            XCTAssertFalse(state.backfillClaudeTerminalMetadata(sessionId: "claude-test", process: process,
+                readEnvironment: { _ in reads += 1; return withoutTmux }))
+        }
+        XCTAssertEqual(reads, 1)
+        XCTAssertNil(state.sessions["claude-test"]?.termApp, "Only a tmux process is backfilled")
+
+        // A removed and re-created card reads again.
+        state.removeSession("claude-test")
+        state.sessions["claude-test"] = try fixture().0.sessions["claude-test"]
+        _ = state.backfillClaudeTerminalMetadata(sessionId: "claude-test", process: process,
+            readEnvironment: { _ in reads += 1; return self.env })
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(state.sessions["claude-test"]?.tmuxPane, "%13")
+    }
+
     func testUnreadableEnvironmentDoesNotInventTerminalMetadata() throws {
         let (state, process) = try fixture()
         XCTAssertFalse(state.backfillClaudeTerminalMetadata(sessionId: "claude-test", process: process,

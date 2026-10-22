@@ -1071,6 +1071,7 @@ final class AppState {
         hermesStoreReads.removeValue(forKey: sessionId)
         hostHarnessProbes.removeValue(forKey: sessionId)
         hostHarnessProbeRetryAt.removeValue(forKey: sessionId)
+        claudeTerminalProbes.removeValue(forKey: sessionId)
         if activeSessionId == sessionId {
             activeSessionId = mostActiveSessionId()
         }
@@ -1389,6 +1390,12 @@ final class AppState {
     /// Throttle for probes that could not read the process (it had already
     /// exited, or the pid is a short-lived hook shell) — retried, not cached.
     private var hostHarnessProbeRetryAt: [String: Date] = [:]
+    /// The Claude process whose environment `backfillClaudeTerminalMetadata`
+    /// already read, per session. tryMonitorSession runs on every hook event
+    /// and discovery scan, and an environment is fixed at exec, so one read
+    /// per process is all there is to learn.
+    @ObservationIgnored
+    var claudeTerminalProbes: [String: ProcessIdentity] = [:]
 
     /// Detect a UI harness (T3 Code) in the CLI's ancestry, off the main actor.
     /// Runs once per CLI pid; remote sessions never probe the local process table.
