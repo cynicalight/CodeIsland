@@ -285,8 +285,8 @@ struct TerminalActivator {
 
         // --- tmux: switch pane first, then fall through to terminal-specific activation ---
         if !tmuxAlreadySelected, session.source == "codex",
-           session.tmuxPane != nil || session.tmuxEnv != nil {
-            activateVerifiedCodexTmux(session: session, sessionId: sessionId)
+           let pane = session.tmuxPane, !pane.isEmpty {
+            activateCodexTmux(session: session, sessionId: sessionId)
             return
         }
         if !tmuxAlreadySelected, let pane = session.tmuxPane, !pane.isEmpty {
@@ -1049,38 +1049,31 @@ struct TerminalActivator {
 
     /// Re-resolve the target before touching tmux. Hooks from a shared Codex
     /// daemon can all carry the pane where that daemon originally started.
-    private static func activateVerifiedCodexTmux(session: SessionSnapshot, sessionId: String?) {
+    /// Only a pane known to be wrong is refused: when nothing can be checked
+    /// (no tmux binary, no server answer, the process is gone) the hook's pane
+    /// is used exactly as for every other source.
+    private static func activateCodexTmux(session: SessionSnapshot, sessionId: String?) {
         DispatchQueue.global(qos: .userInitiated).async {
-            guard let bin = findBinary("tmux"),
-                  var resolved = CodexTmuxRouting.probe(session: session, tmuxPath: bin),
-                  let pane = resolved.tmuxPane else {
-                showTmuxLocationUnavailable()
-                return
-            }
-            let env = tmuxProcessEnv(resolved.tmuxEnv)
-            guard let data = ProcessRunner.run(path: bin, args: ["list-clients", "-F", "#{client_tty}"],
-                                               env: env, timeout: 2),
-                  let output = String(data: data, encoding: .utf8) else {
-                showTmuxLocationUnavailable()
-                return
-            }
-            let clients = output.split(separator: "\n").map(String.init)
-            let client = resolved.tmuxClientTty.flatMap { clients.contains($0) ? $0 : nil }
-                ?? (clients.count == 1 ? clients[0] : nil)
-            guard let client else {
-                showTmuxLocationUnavailable()
-                return
-            }
-            // Complete the switch before matching the outer terminal's window.
-            for args in [["switch-client", "-c", client, "-t", pane],
-                         ["select-window", "-t", pane], ["select-pane", "-t", pane]] {
-                guard ProcessRunner.run(path: bin, args: args, env: env, timeout: 2) != nil else {
+            var target = session
+            if let bin = findBinary("tmux") {
+                let env = tmuxProcessEnv(session.tmuxEnv)
+                switch CodexTmuxRouting.probe(session: session, tmuxPath: bin) {
+                case .located(let pane):
+                    let clients = runProcess(bin, args: ["list-clients", "-F", CodexTmuxRouting.clientFormat], env: env)
+                        .flatMap { String(data: $0, encoding: .utf8) }
+                        .map(CodexTmuxRouting.parseClients) ?? []
+                    let client = CodexTmuxRouting.client(for: pane, clients: clients, preferred: session.tmuxClientTty)
+                    // Complete the switch before matching the outer terminal's window.
+                    selectTmuxPane(bin, pane: pane.id, env: env, client: client)
+                    target.tmuxPane = pane.id
+                    if let client { target.tmuxClientTty = client }
+                case .ambiguous:
                     showTmuxLocationUnavailable()
                     return
+                case .unverified:
+                    if let pane = session.tmuxPane { selectTmuxPane(bin, pane: pane, env: env) }
                 }
             }
-            resolved.tmuxClientTty = client
-            let target = resolved
             DispatchQueue.main.async {
                 activateTerminal(session: target, sessionId: sessionId, tmuxAlreadySelected: true)
             }
@@ -1103,15 +1096,20 @@ struct TerminalActivator {
     private static func activateTmux(pane: String, tmuxEnv: String? = nil) {
         guard let bin = findBinary("tmux") else { return }
         DispatchQueue.global(qos: .userInitiated).async {
-            // 1) Switch the attached client to the target session — needed when the user is
-            //    currently attached to session A but the agent runs in session B. tmux derives
-            //    the session from the pane target, so "switch-client -t <pane>" is sufficient.
-            //    Failure is fine (e.g. no client attached, or pane belongs to current session).
-            _ = runProcess(bin, args: ["switch-client", "-t", pane], env: tmuxProcessEnv(tmuxEnv))
-            // 2) Within that session, switch to the window containing the pane, then select the pane
-            _ = runProcess(bin, args: ["select-window", "-t", pane], env: tmuxProcessEnv(tmuxEnv))
-            _ = runProcess(bin, args: ["select-pane", "-t", pane], env: tmuxProcessEnv(tmuxEnv))
+            selectTmuxPane(bin, pane: pane, env: tmuxProcessEnv(tmuxEnv))
         }
+    }
+
+    /// Blocking; call off the main thread. `client` nil lets tmux pick the client.
+    private static func selectTmuxPane(_ bin: String, pane: String, env: [String: String]?, client: String? = nil) {
+        // 1) Switch the attached client to the target session — needed when the user is
+        //    currently attached to session A but the agent runs in session B. tmux derives
+        //    the session from the pane target, so "switch-client -t <pane>" is sufficient.
+        //    Failure is fine (e.g. no client attached, or pane belongs to current session).
+        _ = runProcess(bin, args: ["switch-client"] + (client.map { ["-c", $0] } ?? []) + ["-t", pane], env: env)
+        // 2) Within that session, switch to the window containing the pane, then select the pane
+        _ = runProcess(bin, args: ["select-window", "-t", pane], env: env)
+        _ = runProcess(bin, args: ["select-pane", "-t", pane], env: env)
     }
 
     // MARK: - Zellij (CLI: zellij action list-panes → go-to-tab + activate parent terminal)

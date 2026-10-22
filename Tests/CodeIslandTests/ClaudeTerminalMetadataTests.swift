@@ -91,7 +91,7 @@ final class ClaudeTerminalMetadataTests: XCTestCase {
             XCTAssertEqual(recovered.termBundleId, "com.mitchellh.ghostty")
             XCTAssertEqual(recovered.tmuxPane, row["expectedPane"] as? String)
             let verified = CodexTmuxRouting.probe(session: recovered, tmuxPath: "/opt/homebrew/bin/tmux")
-            XCTAssertEqual(verified?.tmuxPane, recovered.tmuxPane)
+            XCTAssertEqual(verified.pane?.id, recovered.tmuxPane)
             print("Claude process \(pid) -> \(recovered.termBundleId ?? "") / \(recovered.tmuxPane ?? "")")
         }
     }

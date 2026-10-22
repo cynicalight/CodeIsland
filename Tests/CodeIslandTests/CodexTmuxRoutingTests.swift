@@ -21,14 +21,14 @@ final class CodexTmuxRoutingTests: XCTestCase {
         for _ in 0..<3 {
             let result = CodexTmuxRouting.resolve(session: session(pid: 97662), panes: panes,
                 parentOf: { [97662: 24422, 24422: 1][$0] }, startTime: { _ in self.started })
-            XCTAssertNil(result)
+            XCTAssertEqual(result, .ambiguous)
         }
     }
 
     func testRealCLIUsesCurrentProcessTreeInsteadOfStalePane() {
         let result = CodexTmuxRouting.resolve(session: session(pid: 700), panes: panes,
             parentOf: { [700: 71, 71: 70, 70: 1][$0] }, startTime: { _ in self.started })
-        XCTAssertEqual(result?.tmuxPane, "%7")
+        XCTAssertEqual(result.pane?.id, "%7")
     }
 
     func testTwoCLIsInSameDirectoryResolveToDifferentPanes() {
@@ -38,25 +38,38 @@ final class CodexTmuxRoutingTests: XCTestCase {
             input.cwd = "/same/project"
             let result = CodexTmuxRouting.resolve(session: input, panes: panes,
                 parentOf: { parents[$0] }, startTime: { _ in self.started })
-            XCTAssertEqual(result?.tmuxPane, pane)
+            XCTAssertEqual(result.pane?.id, pane)
         }
     }
 
-    func testClosedPaneAndReusedPIDAreRejected() {
-        XCTAssertNil(CodexTmuxRouting.resolve(session: session(pid: 700), panes: [],
-            parentOf: { _ in 70 }, startTime: { _ in self.started }))
-        XCTAssertNil(CodexTmuxRouting.resolve(session: session(pid: 700), panes: panes,
-            parentOf: { _ in 70 }, startTime: { _ in self.started.addingTimeInterval(10) }))
-    }
-
-    func testMissingProcessAndAncestryCycleAreRejected() {
+    /// Nothing to verify against: the hook's pane stays the target, as it is
+    /// for every other source, instead of failing the jump.
+    func testGoneProcessReusedPIDAndEmptyServerAreUnverified() {
+        // Process gone.
+        XCTAssertEqual(CodexTmuxRouting.resolve(session: session(pid: 700), panes: panes,
+            parentOf: { _ in 70 }, startTime: { _ in nil }), .unverified)
+        // PID reused by a younger process.
+        XCTAssertEqual(CodexTmuxRouting.resolve(session: session(pid: 700), panes: panes,
+            parentOf: { _ in 70 }, startTime: { _ in self.started.addingTimeInterval(10) }), .unverified)
+        // No pane parsed from the server's answer.
+        XCTAssertEqual(CodexTmuxRouting.resolve(session: session(pid: 700), panes: [],
+            parentOf: { _ in 70 }, startTime: { _ in self.started }), .unverified)
+        // No PID at all.
         var input = session(pid: 700)
         input.cliPid = nil
-        XCTAssertNil(CodexTmuxRouting.resolve(session: input, panes: panes,
-            parentOf: { _ in nil }, startTime: { _ in self.started }))
-        XCTAssertNil(CodexTmuxRouting.resolve(session: session(pid: 700), panes: panes,
-            parentOf: { _ in 700 }, startTime: { _ in self.started }))
+        XCTAssertEqual(CodexTmuxRouting.resolve(session: input, panes: panes,
+            parentOf: { _ in nil }, startTime: { _ in self.started }), .unverified)
     }
+
+    func testLiveProcessOutsideEveryPaneIsAmbiguous() {
+        // Closed pane: the live process is under no pane of this server.
+        XCTAssertEqual(CodexTmuxRouting.resolve(session: session(pid: 700), panes: panes,
+            parentOf: { [700: 1][$0] }, startTime: { _ in self.started }), .ambiguous)
+        // An ancestry cycle stops the walk.
+        XCTAssertEqual(CodexTmuxRouting.resolve(session: session(pid: 700), panes: panes,
+            parentOf: { _ in 700 }, startTime: { _ in self.started }), .ambiguous)
+    }
+
     func testSharedDaemonResolvesUniqueLiveTitleAndCwd() {
         var input = session(pid: 97662)
         input.sessionTitle = "Investigate routing"
@@ -65,45 +78,96 @@ final class CodexTmuxRoutingTests: XCTestCase {
             title: "⠼ Investigate routing | project", cwd: "/work/project", command: "codex")
         let result = CodexTmuxRouting.resolve(session: input, panes: panes + [live],
             parentOf: { _ in 1 }, startTime: { _ in self.started })
-        XCTAssertEqual(result?.tmuxPane, "%31")
-        XCTAssertNil(CodexTmuxRouting.resolve(session: input, panes: [live, live],
-            parentOf: { _ in 1 }, startTime: { _ in self.started }))
+        XCTAssertEqual(result.pane?.id, "%31")
+        XCTAssertEqual(CodexTmuxRouting.resolve(session: input, panes: [live, live],
+            parentOf: { _ in 1 }, startTime: { _ in self.started }), .ambiguous)
         var exited = live
         exited.command = "zsh"
-        XCTAssertNil(CodexTmuxRouting.resolve(session: input, panes: [exited],
-            parentOf: { _ in 1 }, startTime: { _ in self.started }))
+        XCTAssertEqual(CodexTmuxRouting.resolve(session: input, panes: [exited],
+            parentOf: { _ in 1 }, startTime: { _ in self.started }), .ambiguous)
         var unrelated = live
         unrelated.cwd = "/other/project"
-        XCTAssertNil(CodexTmuxRouting.resolve(session: input, panes: [unrelated],
-            parentOf: { _ in 1 }, startTime: { _ in self.started }))
+        XCTAssertEqual(CodexTmuxRouting.resolve(session: input, panes: [unrelated],
+            parentOf: { _ in 1 }, startTime: { _ in self.started }), .ambiguous)
         unrelated = live
         unrelated.title = "Other thread | project"
-        XCTAssertNil(CodexTmuxRouting.resolve(session: input, panes: [unrelated],
-            parentOf: { _ in 1 }, startTime: { _ in self.started }))
+        XCTAssertEqual(CodexTmuxRouting.resolve(session: input, panes: [unrelated],
+            parentOf: { _ in 1 }, startTime: { _ in self.started }), .ambiguous)
+    }
+
+    func testParsePanesKeepsTabsInTitleAndSkipsMalformedLines() {
+        let output = "%3\t301\t$1\tcodex\t/work/project\t⠼ Fix\ttabs | project\n"
+            + "garbage\n"
+            + "%4\tnot-a-pid\t$1\tzsh\t/tmp\ttitle\n"
+        let parsed = CodexTmuxRouting.parsePanes(output)
+        XCTAssertEqual(parsed, [CodexTmuxRouting.Pane(id: "%3", pid: 301, title: "⠼ Fix\ttabs | project",
+                                                      cwd: "/work/project", command: "codex", session: "$1")])
+    }
+
+    func testParseClients() {
+        XCTAssertEqual(CodexTmuxRouting.parseClients("/dev/ttys001\t$0\n/dev/ttys004\t$2\n\n"),
+                       [.init(tty: "/dev/ttys001", session: "$0"), .init(tty: "/dev/ttys004", session: "$2")])
+        XCTAssertEqual(CodexTmuxRouting.parseClients(""), [])
+    }
+
+    /// Several attached clients used to fail the jump unless the hook's client
+    /// was still attached; detached servers failed it too.
+    func testClientChoicePrefersOneAlreadyShowingThePanesSession() {
+        let pane = CodexTmuxRouting.Pane(id: "%9", pid: 90, session: "$2")
+        let onOther = CodexTmuxRouting.Client(tty: "/dev/ttys001", session: "$0")
+        let onPane = CodexTmuxRouting.Client(tty: "/dev/ttys004", session: "$2")
+        let alsoOnPane = CodexTmuxRouting.Client(tty: "/dev/ttys007", session: "$2")
+
+        // The hook's client wins among those already showing the session.
+        XCTAssertEqual(CodexTmuxRouting.client(for: pane, clients: [onOther, onPane, alsoOnPane],
+                                               preferred: "/dev/ttys007"), "/dev/ttys007")
+        // A client showing the session beats the hook's client elsewhere.
+        XCTAssertEqual(CodexTmuxRouting.client(for: pane, clients: [onOther, onPane],
+                                               preferred: "/dev/ttys001"), "/dev/ttys004")
+        // Nobody shows it: the hook's client if still attached…
+        XCTAssertEqual(CodexTmuxRouting.client(for: pane, clients: [onOther, .init(tty: "/dev/ttys005", session: "$1")],
+                                               preferred: "/dev/ttys001"), "/dev/ttys001")
+        // …else the only client…
+        XCTAssertEqual(CodexTmuxRouting.client(for: pane, clients: [onOther],
+                                               preferred: "/dev/ttys099"), "/dev/ttys001")
+        // …else tmux's own choice.
+        XCTAssertNil(CodexTmuxRouting.client(for: pane, clients: [onOther, .init(tty: "/dev/ttys005", session: "$1")],
+                                             preferred: "/dev/ttys099"))
+        XCTAssertNil(CodexTmuxRouting.client(for: pane, clients: [], preferred: "/dev/ttys001"))
     }
 
     func testProbeAgainstIsolatedTmuxServer() throws {
         let bin = "/opt/homebrew/bin/tmux"
         guard FileManager.default.isExecutableFile(atPath: bin) else { throw XCTSkip("tmux not installed") }
-        let name = "codeisland-routing-" + UUID().uuidString
-        // Dedicated server: never changes the user's sessions or active window.
-        guard ProcessRunner.run(path: bin, args: ["-L", name, "-f", "/dev/null", "new-session", "-d", "-s", "routing", "sleep 30"], timeout: 3) != nil else {
+        // Dedicated server on a socket this test owns: never touches the user's
+        // sessions, and the socket file tmux leaves behind is removed with it.
+        let socket = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codeisland-routing-\(UUID().uuidString.prefix(8))").path
+        guard ProcessRunner.run(path: bin, args: ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "routing", "sleep 30"], timeout: 3) != nil else {
             XCTFail("Could not start isolated tmux server")
             return
         }
-        defer { _ = ProcessRunner.run(path: bin, args: ["-L", name, "kill-server"], timeout: 3) }
+        defer {
+            _ = ProcessRunner.run(path: bin, args: ["-S", socket, "kill-server"], timeout: 3)
+            try? FileManager.default.removeItem(atPath: socket)
+        }
         let data = try XCTUnwrap(ProcessRunner.run(path: bin,
-            args: ["-L", name, "display-message", "-p", "#{pane_pid}\t#{pane_id}\t#{socket_path}"], timeout: 3))
+            args: ["-S", socket, "display-message", "-p", "#{pane_pid}\t#{pane_id}\t#{session_id}"], timeout: 3))
         let fields = try XCTUnwrap(String(data: data, encoding: .utf8))
             .trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t")
         XCTAssertEqual(fields.count, 3)
         guard fields.count == 3 else { return }
         var input = session(pid: try XCTUnwrap(pid_t(fields[0])))
         input.cliStartTime = nil
-        input.tmuxEnv = "\(fields[2]),1,0"
-        XCTAssertEqual(CodexTmuxRouting.probe(session: input, tmuxPath: bin)?.tmuxPane, String(fields[1]))
+        input.tmuxEnv = "\(socket),1,0"
+        let located = CodexTmuxRouting.probe(session: input, tmuxPath: bin).pane
+        XCTAssertEqual(located?.id, String(fields[1]))
+        XCTAssertEqual(located?.session, String(fields[2]))
         input.cliPid = getpid() // The test runner is not a child of that pane.
-        XCTAssertNil(CodexTmuxRouting.probe(session: input, tmuxPath: bin))
+        XCTAssertEqual(CodexTmuxRouting.probe(session: input, tmuxPath: bin), .ambiguous)
+        // No server on the socket: nothing to verify against.
+        input.tmuxEnv = "\(socket)-missing,1,0"
+        XCTAssertEqual(CodexTmuxRouting.probe(session: input, tmuxPath: bin), .unverified)
     }
 
     func testLiveSavedSessionsWhenRequested() throws {
@@ -120,9 +184,9 @@ final class CodexTmuxRoutingTests: XCTestCase {
             input.tmuxPane = row["tmuxPane"] as? String
             input.sessionTitle = row["sessionTitle"] as? String
             input.cwd = row["cwd"] as? String
-            let resolved = CodexTmuxRouting.probe(session: input, tmuxPath: "/opt/homebrew/bin/tmux")
-            XCTAssertEqual(resolved?.tmuxPane, row["expectedPane"] as? String)
-            print("Live route: \(row["sessionId"] ?? "") -> \(resolved?.tmuxPane ?? "unavailable")")
+            let resolved = CodexTmuxRouting.probe(session: input, tmuxPath: "/opt/homebrew/bin/tmux").pane
+            XCTAssertEqual(resolved?.id, row["expectedPane"] as? String)
+            print("Live route: \(row["sessionId"] ?? "") -> \(resolved?.id ?? "unavailable")")
         }
     }
 
